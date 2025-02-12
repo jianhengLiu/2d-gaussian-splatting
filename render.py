@@ -25,6 +25,37 @@ from utils.render_utils import generate_path, create_videos
 
 import open3d as o3d
 
+def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
+    render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
+    gts_path = os.path.join(model_path, name, "ours_{}".format(iteration), "gt")
+
+    makedirs(render_path, exist_ok=True)
+    makedirs(gts_path, exist_ok=True)
+
+    for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
+        rendering = render(view, gaussians, pipeline, background)["render"]
+        gt = view.original_image[0:3, :, :]
+        torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
+        torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
+
+def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, skip_eval : bool):
+    with torch.no_grad():
+        
+        gaussians = GaussianModel(dataset.sh_degree)
+        scene = Scene(dataset, gaussians, load_iteration=iteration, shuffle=False)
+
+        bg_color = [1,1,1] if dataset.white_background else [0, 0, 0]
+        background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+        if not skip_train:
+             render_set(dataset.model_path, "train", scene.loaded_iter, scene.getTrainCameras(), gaussians, pipeline, background)
+
+        if not skip_test:
+             render_set(dataset.model_path, "test", scene.loaded_iter, scene.getTestCameras(), gaussians, pipeline, background)
+             
+        if not skip_eval:
+             render_set(dataset.model_path, "eval", scene.loaded_iter, scene.getEvalCameras(), gaussians, pipeline, background)
+
 if __name__ == "__main__":
     # Set up command line argument parser
     parser = ArgumentParser(description="Testing script parameters")
@@ -34,6 +65,7 @@ if __name__ == "__main__":
     parser.add_argument("--skip_train", action="store_true")
     parser.add_argument("--skip_test", action="store_true")
     parser.add_argument("--skip_mesh", action="store_true")
+    parser.add_argument("--skip_eval", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--render_path", action="store_true")
     parser.add_argument("--voxel_size", default=-1.0, type=float, help='Mesh: voxel size for TSDF')
@@ -54,6 +86,7 @@ if __name__ == "__main__":
     
     train_dir = os.path.join(args.model_path, 'train', "ours_{}".format(scene.loaded_iter))
     test_dir = os.path.join(args.model_path, 'test', "ours_{}".format(scene.loaded_iter))
+    eval_dir = os.path.join(args.model_path, 'eval', "ours_{}".format(scene.loaded_iter))
     gaussExtractor = GaussianExtractor(gaussians, render, pipe, bg_color=bg_color)    
     
     if not args.skip_train:
@@ -68,6 +101,12 @@ if __name__ == "__main__":
         os.makedirs(test_dir, exist_ok=True)
         gaussExtractor.reconstruction(scene.getTestCameras())
         gaussExtractor.export_image(test_dir)
+        
+    if (not args.skip_eval) and (len(scene.getEvalCameras()) > 0):
+        print("export rendered testing images ...")
+        os.makedirs(eval_dir, exist_ok=True)
+        gaussExtractor.reconstruction(scene.getEvalCameras())
+        gaussExtractor.export_image(eval_dir)
     
     
     if args.render_path:
@@ -106,3 +145,8 @@ if __name__ == "__main__":
         mesh_post = post_process_mesh(mesh, cluster_to_keep=args.num_cluster)
         o3d.io.write_triangle_mesh(os.path.join(train_dir, name.replace('.ply', '_post.ply')), mesh_post)
         print("mesh post processed saved at {}".format(os.path.join(train_dir, name.replace('.ply', '_post.ply'))))
+
+    # # Initialize system state (RNG)
+    # safe_state(args.quiet)
+
+    # render_sets(model.extract(args), args.iteration, pipeline.extract(args), args.skip_train, args.skip_test, args.skip_eval)
